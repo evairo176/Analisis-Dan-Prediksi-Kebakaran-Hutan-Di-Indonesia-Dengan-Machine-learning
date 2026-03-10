@@ -44,8 +44,11 @@ data = pd.concat(df_list, ignore_index=True)
 
 print("Initial Shape :", data.shape)
 
-# Backup dataset sebelum cleaning
+# Backup data sebelum cleaning
 data_before_cleaning = data.copy()
+
+# dictionary untuk menyimpan alasan cleaning
+cleaning_log = {}
 
 
 # =====================================================
@@ -83,18 +86,57 @@ data["type"] = data["type"].astype(int)
 # BASIC CLEANING
 # =====================================================
 
+# duplicate
+duplicate_mask = data.duplicated()
+
+for idx in data[duplicate_mask].index:
+    cleaning_log[idx] = "duplicate"
+
 data = data.drop_duplicates()
+
+
+# koordinat indonesia
+geo_mask = ~(
+    (data["latitude"].between(-11,6)) &
+    (data["longitude"].between(95,141))
+)
+
+for idx in data[geo_mask].index:
+    cleaning_log[idx] = "outside_indonesia"
 
 data = data[
     (data["latitude"].between(-11,6)) &
     (data["longitude"].between(95,141))
 ]
 
+
+# confidence
 if "confidence" in data.columns:
+
+    conf_mask = ~data["confidence"].between(0,100)
+
+    for idx in data[conf_mask].index:
+        cleaning_log[idx] = "invalid_confidence"
+
     data = data[data["confidence"].between(0,100)]
 
+
+# frp
 if "frp" in data.columns:
+
+    frp_mask = data["frp"] < 0
+
+    for idx in data[frp_mask].index:
+        cleaning_log[idx] = "negative_frp"
+
     data = data[data["frp"] >= 0]
+
+
+# brightness
+bright_mask = data["brightness"] >= 500
+
+for idx in data[bright_mask].index:
+    cleaning_log[idx] = "brightness_outlier"
 
 data = data[data["brightness"] < 500]
 
@@ -113,6 +155,11 @@ def remove_outlier_iqr(df,col):
     lower = Q1 - 1.5 * IQR
     upper = Q3 + 1.5 * IQR
 
+    mask = (df[col] < lower) | (df[col] > upper)
+
+    for idx in df[mask].index:
+        cleaning_log[idx] = f"{col}_iqr_outlier"
+
     return df[(df[col] >= lower) & (df[col] <= upper)]
 
 
@@ -123,36 +170,17 @@ for col in ["brightness","bright_t31","frp"]:
         data = remove_outlier_iqr(data,col)
 
 print("Final Shape :", data.shape)
+
+
 # =====================================================
-# IDENTIFIKASI DATA YANG TERHAPUS SAAT CLEANING
+# DATA YANG TERHAPUS SAAT CLEANING
 # =====================================================
 
 removed_data = data_before_cleaning.loc[
     ~data_before_cleaning.index.isin(data.index)
 ].copy()
 
-def detect_cleaning_reason(row):
-
-    if not (-11 <= row["latitude"] <= 6 and 95 <= row["longitude"] <= 141):
-        return "outside_indonesia"
-
-    if "confidence" in row.index:
-        if pd.notna(row["confidence"]) and not (0 <= row["confidence"] <= 100):
-            return "invalid_confidence"
-
-    if "frp" in row.index:
-        if pd.notna(row["frp"]) and row["frp"] < 0:
-            return "negative_frp"
-
-    if pd.notna(row["brightness"]) and row["brightness"] >= 500:
-        return "brightness_outlier"
-
-    return "iqr_outlier_or_duplicate"
-
-removed_data["cleaning_reason"] = removed_data.apply(
-    detect_cleaning_reason,
-    axis=1
-)
+removed_data["cleaning_reason"] = removed_data.index.map(cleaning_log)
 
 print("\n===== DATA REMOVED DURING CLEANING =====")
 print("Jumlah data terhapus :", removed_data.shape[0])
@@ -160,10 +188,10 @@ print("Jumlah data terhapus :", removed_data.shape[0])
 print("\n===== CLEANING SUMMARY =====")
 print(removed_data["cleaning_reason"].value_counts())
 
-removed_data.to_csv(
-    f"{OUTPUT_DIR}/removed_data_cleaning.csv",
-    index=False
-)
+print("\nSample removed data:")
+print(removed_data.head(10))
+
+removed_data.to_csv(f"{OUTPUT_DIR}/removed_data_cleaning.csv", index=False)
 
 
 # =====================================================
@@ -247,13 +275,7 @@ preprocessor = ColumnTransformer([
 
 
 # =========================================================
-# 7. MODEL TRAINING
-# Random Forest dan Logistic Regression
-# =========================================================
-
-
-# =========================================================
-# RANDOM FOREST
+# MODEL TRAINING
 # =========================================================
 
 rf_pipeline = Pipeline([
@@ -261,7 +283,6 @@ rf_pipeline = Pipeline([
     ("model", RandomForestClassifier(random_state=42))
 ])
 
-# Hyperparameter Random Forest
 rf_param_grid = {
     "model__n_estimators": [300],
     "model__max_depth": [None],
@@ -271,7 +292,6 @@ rf_param_grid = {
     "model__ccp_alpha": [0.0]
 }
 
-# Grid Search Cross Validation
 rf_grid = GridSearchCV(
     rf_pipeline,
     rf_param_grid,
@@ -280,7 +300,6 @@ rf_grid = GridSearchCV(
     n_jobs=-1
 )
 
-# Training model Random Forest
 rf_grid.fit(X_train, y_train)
 
 best_rf = rf_grid.best_estimator_
@@ -295,7 +314,6 @@ lr_pipeline = Pipeline([
     ("model", LogisticRegression(max_iter=10000))
 ])
 
-# Hyperparameter Logistic Regression
 lr_param_grid = {
     "model__C": [1.0],
     "model__penalty": ["l2"],
@@ -303,7 +321,6 @@ lr_param_grid = {
     "model__max_iter": [10000]
 }
 
-# Grid Search Cross Validation
 lr_grid = GridSearchCV(
     lr_pipeline,
     lr_param_grid,
@@ -312,15 +329,14 @@ lr_grid = GridSearchCV(
     n_jobs=-1
 )
 
-# Training model Logistic Regression
 lr_grid.fit(X_train, y_train)
 
 best_lr = lr_grid.best_estimator_
 
 
-# =========================================================
+# =====================================================
 # SIMPAN MODEL TERBAIK
-# =========================================================
+# =====================================================
 
 models = {
     "Random Forest": best_rf,
@@ -329,7 +345,7 @@ models = {
 
 
 # =====================================================
-# 3 TRAIN VS TEST ACCURACY
+# TRAIN VS TEST ACCURACY
 # =====================================================
 
 train_acc=[]
@@ -358,112 +374,6 @@ plt.ylabel("Accuracy")
 plt.legend()
 
 savefig("03_train_vs_test_accuracy.png")
-
-
-# =====================================================
-# MODEL TESTING + CONFUSION MATRIX + ROC AUC
-# =====================================================
-
-plt.figure(figsize=(8,6))
-plt.plot([0,1],[0,1],"--")
-
-classes = np.sort(y.unique())
-y_test_bin = label_binarize(y_test,classes=classes)
-
-for name,model in models.items():
-
-    print(f"\n=== {name} ===")
-
-    # Prediction
-    y_pred = model.predict(X_test)
-
-    # Accuracy
-    acc = accuracy_score(y_test,y_pred)
-    print(f"Accuracy: {acc*100:.2f}%")
-
-    # Classification report
-    print(classification_report(y_test,y_pred))
-
-    # Confusion Matrix
-    cm = confusion_matrix(y_test,y_pred)
-
-    plt.figure(figsize=(6,5))
-    sns.heatmap(cm,annot=True,fmt="d",cmap="Blues")
-
-    plt.title(f"Confusion Matrix - {name}")
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-
-    savefig(f"cm_{name.replace(' ','_')}.png")
-
-    # ROC AUC
-    if hasattr(model.named_steps["model"],"predict_proba"):
-
-        y_score = model.predict_proba(X_test)
-
-        fpr,tpr,_ = roc_curve(y_test_bin.ravel(),y_score.ravel())
-
-        roc_auc = auc(fpr,tpr)
-
-        print(f"AUC Score ({name}): {roc_auc:.4f}")
-
-        plt.plot(fpr,tpr,label=f"{name} (AUC={roc_auc:.3f})")
-
-plt.legend()
-plt.title("ROC Curve Comparison")
-
-savefig("07_roc_compare.png")
-
-
-# =====================================================
-# 4 FEATURE IMPORTANCE COMPARISON
-# =====================================================
-
-rf = best_rf.named_steps["model"]
-lr = best_lr.named_steps["model"]
-
-feature_names = num_cols + list(
-    best_rf.named_steps["prep"]
-    .named_transformers_["cat"]
-    .get_feature_names_out(cat_cols)
-)
-
-rf_imp = rf.feature_importances_
-lr_imp = np.mean(np.abs(lr.coef_), axis=0)
-
-# Normalisasi
-rf_imp = rf_imp / rf_imp.max()
-lr_imp = lr_imp / lr_imp.max()
-
-df_feat = pd.DataFrame({
-    "Feature": feature_names,
-    "Random Forest": rf_imp,
-    "Logistic Regression": lr_imp
-})
-
-df_feat["mean"] = df_feat[["Random Forest","Logistic Regression"]].mean(axis=1)
-
-df_feat = df_feat.sort_values("mean",ascending=False).head(10)
-
-plt.figure(figsize=(12,8))
-
-x = np.arange(len(df_feat))
-width = 0.35
-
-plt.barh(x-width/2, df_feat["Random Forest"], width, label="Random Forest")
-plt.barh(x+width/2, df_feat["Logistic Regression"], width, label="Logistic Regression")
-
-plt.yticks(x, df_feat["Feature"])
-
-plt.title("Feature Importance Comparison")
-
-plt.xlabel("Normalized Importance")
-
-plt.legend()
-
-plt.gca().invert_yaxis()
-
-savefig("04_feature_importance_comparison.png")
 
 
 print("FINISH")
