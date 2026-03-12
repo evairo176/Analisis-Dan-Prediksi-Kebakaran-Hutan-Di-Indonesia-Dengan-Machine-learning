@@ -2,32 +2,32 @@
 # MODIS FIRMS INDONESIA - FINAL PIPELINE
 # ============================================
 
-import os
+import os  # modul untuk operasi sistem seperti membuat folder
 import warnings
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore")  # menonaktifkan warning agar output lebih bersih
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd  # library manipulasi data
+import numpy as np  # operasi numerik
+import matplotlib.pyplot as plt  # visualisasi grafik
+import seaborn as sns  # visualisasi statistik
 
-from sklearn.model_selection import train_test_split,StratifiedKFold, GridSearchCV
-from sklearn.preprocessing import OneHotEncoder, MinMaxScaler, label_binarize
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, roc_curve, auc
+from sklearn.model_selection import train_test_split,StratifiedKFold, GridSearchCV  # pembagian data dan cross validation
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler, label_binarize  # preprocessing data
+from sklearn.compose import ColumnTransformer  # transformer untuk pipeline preprocessing
+from sklearn.pipeline import Pipeline  # pipeline preprocessing + model
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, roc_curve, auc  # evaluasi model
 
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression  # algoritma Logistic Regression
+from sklearn.ensemble import RandomForestClassifier  # algoritma Random Forest
 
 
 # =====================================================
 # OUTPUT FOLDER
 # =====================================================
-OUTPUT_DIR = "output"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_DIR = "output"  # menentukan folder output
+os.makedirs(OUTPUT_DIR, exist_ok=True)  # membuat folder jika belum ada
 
-def savefig(name):
+def savefig(name):  # fungsi untuk menyimpan grafik
     plt.savefig(f"{OUTPUT_DIR}/{name}", dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -37,73 +37,73 @@ def savefig(name):
 # =====================================================
 df_list = []
 
-for year in range(2020,2025):
+for year in range(2020,2025):  # membaca dataset hotspot dari tahun 2020–2024
     df_list.append(pd.read_csv(f"dataset/modis_{year}_Indonesia.csv"))
 
-data = pd.concat(df_list, ignore_index=True)
+data = pd.concat(df_list, ignore_index=True)  # menggabungkan seluruh dataset
 
-print("Initial Shape :", data.shape)
+print("Initial Shape :", data.shape)  # menampilkan jumlah data awal
 
 # Backup dataset sebelum cleaning
-data_before_cleaning = data.copy()
+data_before_cleaning = data.copy()  # menyimpan dataset sebelum proses cleaning
 
 
 # =====================================================
 # FEATURE ENGINEERING
 # =====================================================
 
-data["acq_date"] = data["acq_date"].astype(str)
+data["acq_date"] = data["acq_date"].astype(str)  # memastikan kolom tanggal bertipe string
 
-data[["Year","Month","Day"]] = data["acq_date"].str.split("-", expand=True)
+data[["Year","Month","Day"]] = data["acq_date"].str.split("-", expand=True)  # memecah tanggal menjadi tahun, bulan, hari
 
 data["Year"] = pd.to_numeric(data["Year"], errors="coerce")
 data["Month"] = pd.to_numeric(data["Month"], errors="coerce")
 data["Day"] = pd.to_numeric(data["Day"], errors="coerce")
 
-data["acq_time"] = data["acq_time"].apply(lambda x: f"{int(x):04d}" if pd.notna(x) else np.nan)
+data["acq_time"] = data["acq_time"].apply(lambda x: f"{int(x):04d}" if pd.notna(x) else np.nan)  # memformat waktu menjadi 4 digit
 data["acq_time"] = pd.to_numeric(data["acq_time"], errors="coerce")
 
-data = data.drop(columns=["instrument","acq_date"], errors="ignore")
+data = data.drop(columns=["instrument","acq_date"], errors="ignore")  # menghapus kolom yang tidak diperlukan
 
 
 # =====================================================
 # CLEAN TARGET
 # =====================================================
 
-data = data.dropna(subset=["type"])
+data = data.dropna(subset=["type"])  # menghapus data tanpa label target
 
-data["type"] = pd.to_numeric(data["type"], errors="coerce")
+data["type"] = pd.to_numeric(data["type"], errors="coerce")  # konversi target menjadi numerik
 
-data = data.dropna(subset=["type"])
+data = data.dropna(subset=["type"])  # menghapus nilai target yang tidak valid
 
-data["type"] = data["type"].astype(int)
+data["type"] = data["type"].astype(int)  # mengubah tipe target menjadi integer
 
 
 # =====================================================
 # BASIC CLEANING
 # =====================================================
 
-data = data.drop_duplicates()
+data = data.drop_duplicates()  # menghapus data duplikat
 
 data = data[
     (data["latitude"].between(-11,6)) &
     (data["longitude"].between(95,141))
-]
+]  # memfilter hotspot yang berada di wilayah Indonesia
 
 if "confidence" in data.columns:
-    data = data[data["confidence"].between(0,100)]
+    data = data[data["confidence"].between(0,100)]  # memastikan confidence valid
 
 if "frp" in data.columns:
-    data = data[data["frp"] >= 0]
+    data = data[data["frp"] >= 0]  # memastikan nilai frp tidak negatif
 
-data = data[data["brightness"] < 500]
+data = data[data["brightness"] < 500]  # menghapus brightness ekstrem
 
 
 # =====================================================
 # OUTLIER REMOVAL (IQR)
 # =====================================================
 
-def remove_outlier_iqr(df,col):
+def remove_outlier_iqr(df,col):  # fungsi untuk menghapus outlier menggunakan metode IQR
 
     Q1 = df[col].quantile(0.25)
     Q3 = df[col].quantile(0.75)
@@ -116,22 +116,24 @@ def remove_outlier_iqr(df,col):
     return df[(df[col] >= lower) & (df[col] <= upper)]
 
 
-for col in ["brightness","bright_t31","frp"]:
+for col in ["brightness","bright_t31","frp"]:  # menghapus outlier pada fitur numerik penting
 
     if col in data.columns:
 
         data = remove_outlier_iqr(data,col)
 
-print("Final Shape :", data.shape)
+print("Final Shape :", data.shape)  # menampilkan jumlah data setelah cleaning
+
+
 # =====================================================
 # IDENTIFIKASI DATA YANG TERHAPUS SAAT CLEANING
 # =====================================================
 
 removed_data = data_before_cleaning.loc[
     ~data_before_cleaning.index.isin(data.index)
-].copy()
+].copy()  # mengambil data yang terhapus saat cleaning
 
-def detect_cleaning_reason(row):
+def detect_cleaning_reason(row):  # menentukan alasan data dihapus
 
     if not (-11 <= row["latitude"] <= 6 and 95 <= row["longitude"] <= 141):
         return "outside_indonesia"
@@ -163,7 +165,7 @@ print(removed_data["cleaning_reason"].value_counts())
 removed_data.to_csv(
     f"{OUTPUT_DIR}/removed_data_cleaning.csv",
     index=False
-)
+)  # menyimpan data yang terhapus
 
 
 # =====================================================
@@ -172,7 +174,7 @@ removed_data.to_csv(
 
 plt.figure(figsize=(8,6))
 
-class_counts = data["type"].value_counts().sort_index()
+class_counts = data["type"].value_counts().sort_index()  # menghitung distribusi kelas
 
 class_counts.plot(kind="bar")
 
@@ -183,24 +185,23 @@ plt.ylabel("Jumlah Data")
 for i,v in enumerate(class_counts):
     plt.text(i,v,str(v),ha="center")
 
-savefig("01_bar_distribution_type.png")
+savefig("01_bar_distribution_type.png")  # menyimpan grafik distribusi kelas
 
 
 # =====================================================
 # DATA SPLITTING
 # =====================================================
 
-X = data.drop(columns=["type"])
-y = data["type"]
+X = data.drop(columns=["type"])  # fitur input
+y = data["type"]  # target klasifikasi
 
 X_train, X_test, y_train, y_test = train_test_split(
 
     X,
     y,
-    test_size=0.2,
+    test_size=0.2,  # 20% data testing
     random_state=42,
-    stratify=y
-
+    stratify=y  # menjaga distribusi kelas
 )
 
 
@@ -235,13 +236,13 @@ savefig("02_stratified_split_distribution.png")
 # PREPROCESS PIPELINE
 # =====================================================
 
-cat_cols = [c for c in X.columns if X[c].dtype=="object"]
-num_cols = [c for c in X.columns if X[c].dtype!="object"]
+cat_cols = [c for c in X.columns if X[c].dtype=="object"]  # fitur kategorikal
+num_cols = [c for c in X.columns if X[c].dtype!="object"]  # fitur numerik
 
 preprocessor = ColumnTransformer([
 
-    ("num",MinMaxScaler(),num_cols),
-    ("cat",OneHotEncoder(handle_unknown="ignore"),cat_cols)
+    ("num",MinMaxScaler(),num_cols),  # normalisasi fitur numerik
+    ("cat",OneHotEncoder(handle_unknown="ignore"),cat_cols)  # encoding kategori
 
 ])
 
@@ -257,8 +258,8 @@ preprocessor = ColumnTransformer([
 # =========================================================
 
 rf_pipeline = Pipeline([
-    ("prep", preprocessor),
-    ("model", RandomForestClassifier(random_state=42))
+    ("prep", preprocessor),  # preprocessing
+    ("model", RandomForestClassifier(random_state=42))  # model Random Forest
 ])
 
 # Hyperparameter Random Forest
@@ -280,8 +281,7 @@ rf_grid = GridSearchCV(
     n_jobs=-1
 )
 
-# Training model Random Forest
-rf_grid.fit(X_train, y_train)
+rf_grid.fit(X_train, y_train)  # training model Random Forest
 
 best_rf = rf_grid.best_estimator_
 
@@ -312,8 +312,7 @@ lr_grid = GridSearchCV(
     n_jobs=-1
 )
 
-# Training model Logistic Regression
-lr_grid.fit(X_train, y_train)
+lr_grid.fit(X_train, y_train)  # training model Logistic Regression
 
 best_lr = lr_grid.best_estimator_
 
